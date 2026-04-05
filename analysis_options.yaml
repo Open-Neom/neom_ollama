@@ -1,0 +1,12 @@
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+  exclude:
+    - example/**
+    - test/**
+
+linter:
+  rules:
+    - prefer_const_constructors
+    - prefer_final_locals

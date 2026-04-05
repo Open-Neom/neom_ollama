@@ -1,0 +1,22 @@
+name: neom_ollama
+description: >-
+  Ollama integration for Dart — model discovery, pull/delete, health checks,
+  setup automation, and OpenAI-compatible chat service for local AI inference.
+version: 1.0.0
+homepage: https://github.com/Open-Neom/neom_ollama
+repository: https://github.com/Open-Neom/neom_ollama
+issue_tracker: https://github.com/Open-Neom/neom_ollama/issues
+topics:
+  - ai
+  - ollama
+  - local-inference
+  - llm
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  http: ^1.4.0
+
+dev_dependencies:
+  test: ^1.25.0
