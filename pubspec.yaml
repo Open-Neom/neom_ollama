@@ -1,9 +1,10 @@
 name: neom_ollama
 description: >-
   Ollama integration for Dart — model discovery, pull/delete, health checks,
-  setup automation, OpenAI-compatible chat, hardware profiling, and reasoning
-  trace parsing (Qwen3, DeepSeek-R1, QwQ) for local AI inference.
-version: 1.1.0
+  setup automation, OpenAI-compatible chat, hardware profiling, reasoning
+  trace parsing, and plain-text tool-call recovery for local models that
+  don't return structured tool_calls (Llama 3.2, Phi, Qwen, Hermes, DeepSeek).
+version: 1.2.0
 homepage: https://github.com/Open-Neom/neom_ollama
 repository: https://github.com/Open-Neom/neom_ollama
 issue_tracker: https://github.com/Open-Neom/neom_ollama/issues

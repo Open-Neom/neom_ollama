@@ -1,3 +1,17 @@
+## 1.2.0
+
+- **`PlainTextToolCallParser`** — recovers tool calls embedded as text in model output for local models that don't always populate the structured `tool_calls` field. Supports five formats out of the box:
+  - **Bracket** (LMStudio / Mistral): `[name]\n{...}\n[END_TOOL_REQUEST]` or `[/name]`
+  - **Hermes / Qwen tag**: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`
+  - **Function-call tag**: `<function_call>{"name": "...", "arguments": {...}}</function_call>`
+  - **Fenced JSON**: ` ```json ` or ` ```tool_call ` blocks containing `{"name": "...", "arguments": {...}}`
+  - **Bare JSON**: whole-message `{"name": "...", "arguments": {...}}` (last-resort)
+- Tolerates `parameters` as an alias for `arguments` and string-escaped JSON arguments (some Llama variants).
+- Optional `allowedToolNames` set for host-side allowlist filtering.
+- 256 KB per-block payload cap to bound parsing cost.
+- `PlainTextToolCallParser.strip(text, blocks)` — removes recovered blocks and returns the user-visible content for chat UIs.
+- 23 unit tests covering all five formats, edge cases, and the strip helper.
+
 ## 1.1.0
 
 - **Hardware profiler** — cross-platform RAM/CPU/GPU detection (`HardwareProfiler.detect()`), with native (FFI), web (navigator + WebGL), and stub backends.

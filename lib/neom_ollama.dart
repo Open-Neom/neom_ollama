@@ -23,6 +23,7 @@ export 'src/ollama_client.dart';
 export 'src/ollama_setup.dart';
 export 'src/ollama_chat_service.dart';
 export 'src/thinking_parser.dart';
+export 'src/plain_text_tool_calls.dart';
 
 // Hardware & Optimization
 export 'src/hardware_profiler.dart';
