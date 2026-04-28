@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'thinking_parser.dart';
+
 // ═══════════════════════════════════════════
 // Status & Models
 // ═══════════════════════════════════════════
@@ -212,8 +214,32 @@ class OllamaClient {
     }
   }
 
-  /// Single-turn chat (native Ollama API). Returns response text.
+  /// Single-turn chat (native Ollama API). Returns response text with any
+  /// `<think>…</think>` reasoning block stripped (user-visible content only).
+  ///
+  /// For full access to the reasoning trace, use [chatWithThinking].
   Future<String> chat(String model, String prompt, {String? system}) async {
+    final result = await chatWithThinking(model, prompt, system: system);
+    return result.content;
+  }
+
+  /// Single-turn chat that also exposes the reasoning trace.
+  ///
+  /// Ollama's native API (as of the `fix: enable thinking support for the
+  /// ollama api` patch on main) can return a `message.thinking` field when
+  /// the backing model supports it (Qwen3, DeepSeek-R1, QwQ, gpt-oss…).
+  /// When the server omits that field but the model still emits inline
+  /// `<think>…</think>` tags, we fall back to parsing the content via
+  /// [ThinkingParser].
+  ///
+  /// Pass [enableThinking] = false to request a non-reasoning response
+  /// (sent as `"think": false` in the Ollama request body).
+  Future<OllamaChatResult> chatWithThinking(
+    String model,
+    String prompt, {
+    String? system,
+    bool enableThinking = true,
+  }) async {
     final messages = <Map<String, String>>[];
     if (system != null) messages.add({'role': 'system', 'content': system});
     messages.add({'role': 'user', 'content': prompt});
@@ -221,12 +247,35 @@ class OllamaClient {
     final resp = await http.post(
       Uri.parse('$host/api/chat'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'model': model, 'messages': messages, 'stream': false}),
+      body: jsonEncode({
+        'model': model,
+        'messages': messages,
+        'stream': false,
+        if (!enableThinking) 'think': false,
+      }),
     ).timeout(const Duration(seconds: 60));
 
-    if (resp.statusCode != 200) throw Exception('Ollama error: ${resp.statusCode}');
-    final body = jsonDecode(resp.body);
-    return body['message']?['content'] as String? ?? '';
+    if (resp.statusCode != 200) {
+      throw Exception('Ollama error: ${resp.statusCode}');
+    }
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    final message = body['message'] as Map<String, dynamic>? ?? const {};
+    final rawContent = message['content'] as String? ?? '';
+    final serverThinking = message['thinking'] as String? ?? '';
+
+    // Prefer the structured thinking field (new Ollama API). Fall back to
+    // inline-tag parsing for older servers or models that still emit tags.
+    if (serverThinking.isNotEmpty) {
+      return OllamaChatResult(
+        thinking: serverThinking,
+        content: rawContent,
+      );
+    }
+    final split = ThinkingParser.split(rawContent);
+    return OllamaChatResult(
+      thinking: split.thinking,
+      content: split.content,
+    );
   }
 
   /// Streaming chat (native Ollama API). Yields text chunks.
@@ -255,4 +304,24 @@ class OllamaClient {
 
   /// OpenAI-compatible base URL for providers that use /v1/chat/completions.
   String get openAiBaseUrl => '$host/v1';
+}
+
+/// Result of [OllamaClient.chatWithThinking].
+///
+/// * [thinking] — the reasoning trace (empty when the model didn't think).
+/// * [content] — the user-visible answer, always free of thinking markers.
+class OllamaChatResult {
+  final String thinking;
+  final String content;
+
+  const OllamaChatResult({
+    required this.thinking,
+    required this.content,
+  });
+
+  bool get hasThinking => thinking.isNotEmpty;
+
+  @override
+  String toString() =>
+      'OllamaChatResult(thinking: ${thinking.length} chars, content: ${content.length} chars)';
 }

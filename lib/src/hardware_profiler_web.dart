@@ -27,7 +27,8 @@ Future<HardwareProfile> detectHardware() async {
   try {
     // RAM — navigator.deviceMemory (Chrome, Edge, Opera)
     // Returns: 0.25, 0.5, 1, 2, 4, 8 (capped at 8 GB, rounded down)
-    final deviceMemory = js_util.getProperty(html.window.navigator, 'deviceMemory');
+    final deviceMemory =
+        js_util.getProperty<Object?>(html.window.navigator, 'deviceMemory');
     if (deviceMemory != null) {
       totalRam = (deviceMemory as num).round().clamp(1, 128);
     }
@@ -52,7 +53,8 @@ Future<HardwareProfile> detectHardware() async {
     final canvas = html.CanvasElement();
     final gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
     if (gl != null) {
-      final debugExt = js_util.callMethod(gl, 'getExtension', ['WEBGL_debug_renderer_info']);
+      final debugExt = js_util.callMethod<Object?>(
+          gl, 'getExtension', ['WEBGL_debug_renderer_info']);
       if (debugExt != null) {
         // 0x9246 = UNMASKED_RENDERER_WEBGL
         final renderer = js_util.callMethod(gl, 'getParameter', [0x9246]) as String?;

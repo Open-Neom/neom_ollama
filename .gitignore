@@ -3,3 +3,18 @@ build/
 .packages
 pubspec.lock
 .DS_Store
+
+# Internal QA artifacts — not for pub.dev bundle
+doc/regression-testing/
+*.xlsx
+*.docx
+
+# IDE / editor state
+.idea/
+.vscode/
+*.iml
+
+# Local dev overrides (library packages should not track these)
+pubspec_overrides.yaml
+example/pubspec_overrides.yaml
+example/pubspec.lock
