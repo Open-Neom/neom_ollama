@@ -1,6 +1,6 @@
 // Stub fallback — should never be reached in practice.
 
-import 'hardware_profiler.dart';
+import 'hardware_profile_model.dart';
 
 Future<HardwareProfile> detectHardware() async {
   return const HardwareProfile(

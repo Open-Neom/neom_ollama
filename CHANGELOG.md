@@ -1,3 +1,8 @@
+# Changelog - neom_ollama
+
+## Unreleased - System updates
+- Actualizaciones de estabilidad y compatibilidad.
+
 ## 1.2.0
 
 - **`PlainTextToolCallParser`** — recovers tool calls embedded as text in model output for local models that don't always populate the structured `tool_calls` field. Supports five formats out of the box:

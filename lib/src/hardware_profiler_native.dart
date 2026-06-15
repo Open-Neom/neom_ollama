@@ -2,7 +2,7 @@
 
 import 'dart:io';
 
-import 'hardware_profiler.dart';
+import 'hardware_profile_model.dart';
 
 Future<HardwareProfile> detectHardware() async {
   int totalRam = 16, availableRam = 8;

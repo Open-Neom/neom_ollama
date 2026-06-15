@@ -14,7 +14,7 @@ import 'dart:html' as html;
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:js_util' as js_util;
 
-import 'hardware_profiler.dart';
+import 'hardware_profile_model.dart';
 
 Future<HardwareProfile> detectHardware() async {
   int totalRam = 8;

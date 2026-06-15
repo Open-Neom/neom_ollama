@@ -6,6 +6,8 @@ analyzer:
     - example/**
     - test/**
 
+    - lib/src/hardware_profiler.dart
+    - lib/src/hardware_profiler_stub.dart
 linter:
   rules:
     - prefer_const_constructors
