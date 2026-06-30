@@ -92,7 +92,7 @@ class PlainTextToolCallParser {
 
   /// Maximum bytes we will scan inside a single JSON payload before giving up.
   /// Prevents pathological input from blowing up memory or time. 256 KB
-  /// matches OpenClaw's upstream budget.
+  /// matches Gateway's upstream budget.
   static const int defaultMaxPayloadBytes = 256 * 1024;
 
   /// Scans [text] for tool calls in any of the supported formats.
