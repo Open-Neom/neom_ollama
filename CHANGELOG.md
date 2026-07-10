@@ -1,5 +1,9 @@
 # Changelog - neom_ollama
 
+## [1.1.0] - 2026-07-09
+- Update chat service client logic and pubspec dependencies.
+
+
 ## Unreleased - System updates
 - Actualizaciones de estabilidad y compatibilidad.
 

@@ -42,6 +42,7 @@ class OllamaChatService {
         'temperature': temperature,
         'max_tokens': maxTokens,
         'stream': false,
+        'keep_alive': 1800, // Keep model in RAM for 30 minutes
       }),
     ).timeout(const Duration(seconds: 60));
 
@@ -71,6 +72,7 @@ class OllamaChatService {
       'temperature': temperature,
       'max_tokens': maxTokens,
       'stream': true,
+      'keep_alive': 1800, // Keep model in RAM for 30 minutes
     });
 
     final response = await http.Client().send(request)
@@ -114,5 +116,14 @@ class OllamaChatService {
   /// Clear conversation history (keep system instruction).
   void clearHistory() {
     _conversationMessages.removeWhere((m) => m['role'] != 'system');
+  }
+
+  /// Get current conversation messages.
+  List<Map<String, dynamic>> get conversationMessages => _conversationMessages;
+
+  /// Rebuilds conversation history from list of messages.
+  void rebuildHistory(List<Map<String, dynamic>> messages) {
+    _conversationMessages.clear();
+    _conversationMessages.addAll(messages);
   }
 }
