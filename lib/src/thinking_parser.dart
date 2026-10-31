@@ -10,16 +10,22 @@
 class ThinkingParser {
   ThinkingParser._();
 
-  // Matches <think>…</think> or <thinking>…</thinking>, case-insensitive,
-  // multi-line, greedy-non (first closing tag wins).
+  // Matches <think>…</think>, <thinking>…</thinking>, or Gemma 4's
+  // <|channel>thought…<channel|> (and <|channel|>thought…<|channel|>),
+  // case-insensitive, multi-line, non-greedy (first closing tag wins).
   static final RegExp _tagRe = RegExp(
-    r'<think(?:ing)?>([\s\S]*?)</think(?:ing)?>',
+    r'(?:<think(?:ing)?>([\s\S]*?)</think(?:ing)?>|<\|channel\|?>\s*thought\b([\s\S]*?)(?:<\|?channel\|>|</channel>))',
     caseSensitive: false,
   );
 
-  // Matches an open `<think>` that never closes (streaming / truncated).
+  // Matches an open `<think>` or `<|channel>thought` that never closes (streaming / truncated).
   static final RegExp _openRe = RegExp(
-    r'<think(?:ing)?>([\s\S]*)$',
+    r'(?:<think(?:ing)?>|<\|channel\|?>\s*thought\b)([\s\S]*)$',
+    caseSensitive: false,
+  );
+
+  static final RegExp _residualTagsRe = RegExp(
+    r'(?:</?think(?:ing)?>|<\|channel\|?>\s*thought\b|<\|?channel\|>|</channel>)',
     caseSensitive: false,
   );
 
@@ -40,12 +46,15 @@ class ThinkingParser {
   static ThinkingSplit split(String raw) {
     if (raw.isEmpty) return const ThinkingSplit(thinking: '', content: '');
 
+    String cleanTags(String text) => text.replaceAll(_residualTagsRe, '').trim();
+
     // Try closed tags first.
     final matches = _tagRe.allMatches(raw).toList();
     if (matches.isNotEmpty) {
-      final thinkingParts =
-          matches.map((m) => m.group(1)!.trim()).where((s) => s.isNotEmpty);
-      final content = raw.replaceAll(_tagRe, '').trim();
+      final thinkingParts = matches
+          .map((m) => cleanTags(m.group(1) ?? m.group(2) ?? ''))
+          .where((s) => s.isNotEmpty);
+      final content = cleanTags(raw.replaceAll(_tagRe, ''));
       return ThinkingSplit(
         thinking: thinkingParts.join('\n\n'),
         content: content,
@@ -55,8 +64,8 @@ class ThinkingParser {
     // Try a dangling open tag.
     final open = _openRe.firstMatch(raw);
     if (open != null) {
-      final before = raw.substring(0, open.start).trim();
-      final thinking = open.group(1)!.trim();
+      final before = cleanTags(raw.substring(0, open.start));
+      final thinking = cleanTags(open.group(1)!);
       return ThinkingSplit(thinking: thinking, content: before);
     }
 
