@@ -1,5 +1,8 @@
 # Changelog - neom_ollama
 
+## [1.2.1] - 2026-11-07
+- Add `@Open-Neom` GitHub Sponsors `funding` metadata and publish latest local model & tool-call recovery updates.
+
 ## [1.1.0] - 2026-07-09
 - Update chat service client logic and pubspec dependencies.
 

@@ -8,6 +8,8 @@ version: 1.2.1
 homepage: https://github.com/Open-Neom/neom_ollama
 repository: https://github.com/Open-Neom/neom_ollama
 issue_tracker: https://github.com/Open-Neom/neom_ollama/issues
+funding:
+  - https://github.com/sponsors/Open-Neom
 topics:
   - ai
   - ollama
