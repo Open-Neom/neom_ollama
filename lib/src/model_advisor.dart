@@ -29,6 +29,9 @@ enum Quantization {
 
   /// Estimated disk/RAM size in GB for a model with [paramsBillions] parameters.
   double estimateSizeGB(double paramsBillions) {
+    if (!paramsBillions.isFinite || paramsBillions <= 0) {
+      return double.infinity;
+    }
     // FP16 ≈ 2 bytes per param → paramsBillions * 2 GB base
     return paramsBillions * 2 * sizeRatio;
   }
@@ -153,10 +156,16 @@ class ModelAdvisor {
     String category = 'general',
   }) {
     final maxGB = hw.maxModelSizeGB;
-    final candidates = _knownModels
-        .where((m) => m.category == category)
-        .toList()
-      ..sort((a, b) => b.params.compareTo(a.params)); // Largest first
+    final normalizedCategory = category.trim().toLowerCase();
+    var candidates = _knownModels
+        .where((m) => m.category == normalizedCategory)
+        .toList();
+    if (candidates.isEmpty) {
+      candidates = _knownModels
+          .where((m) => m.category == 'general')
+          .toList();
+    }
+    candidates.sort((a, b) => b.params.compareTo(a.params)); // Largest first
 
     // Find the largest model that fits with at least Q4_K_M
     _KnownModel? best;
@@ -236,15 +245,16 @@ class ModelAdvisor {
     String modelName,
     double paramsBillions,
   ) {
+    final validParams = paramsBillions.isFinite && paramsBillions > 0;
     final q = bestQuantization(paramsBillions, hw);
-    final size = q.estimateSizeGB(paramsBillions);
-    final fits = size <= hw.maxModelSizeGB;
+    final size = validParams ? q.estimateSizeGB(paramsBillions) : double.infinity;
+    final fits = validParams && size <= hw.maxModelSizeGB;
     final tokPerSec = hw.estimateTokensPerSecond(paramsBillions);
 
     final variant = ModelVariant(
       name: modelName,
-      tag: '${paramsBillions.toStringAsFixed(0)}b',
-      paramsBillions: paramsBillions,
+      tag: validParams ? '${paramsBillions.toStringAsFixed(0)}b' : 'invalid',
+      paramsBillions: validParams ? paramsBillions : 0,
       diskSizeGB: size,
       quantization: q,
     );

@@ -1,18 +1,16 @@
-// Web hardware detection using browser APIs.
+// Web / Wasm hardware detection using modern `dart:js_interop` APIs.
 //
 // Available signals:
 // - navigator.deviceMemory → RAM (capped at 8, rounded to power of 2)
 // - navigator.hardwareConcurrency → logical CPU cores
 // - WebGL UNMASKED_RENDERER_WEBGL → GPU name (no VRAM info)
-// - navigator.platform / userAgentData → OS detection
+// - navigator.platform / userAgent → OS detection
 //
 // All values are marked as isEstimated=true so the UI shows
 // manual override controls prominently.
 
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:js_util' as js_util;
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 
 import 'hardware_profile_model.dart';
 
@@ -25,64 +23,126 @@ Future<HardwareProfile> detectHardware() async {
   bool isMac = false;
 
   try {
-    // RAM — navigator.deviceMemory (Chrome, Edge, Opera)
-    // Returns: 0.25, 0.5, 1, 2, 4, 8 (capped at 8 GB, rounded down)
-    final deviceMemory =
-        js_util.getProperty<Object?>(html.window.navigator, 'deviceMemory');
-    if (deviceMemory != null) {
-      totalRam = (deviceMemory as num).round().clamp(1, 128);
+    final nav = globalContext['navigator'];
+    if (nav != null && nav.isA<JSObject>()) {
+      final navObj = nav as JSObject;
+
+      // RAM — navigator.deviceMemory (Chrome, Edge, Opera)
+      final devMem = navObj['deviceMemory'];
+      if (devMem != null && devMem.isA<JSNumber>()) {
+        final gb = (devMem as JSNumber).toDartDouble;
+        if (gb.isFinite && gb > 0) {
+          totalRam = gb.round().clamp(1, 128);
+        }
+      }
+
+      // CPU cores — navigator.hardwareConcurrency
+      final concurrency = navObj['hardwareConcurrency'];
+      if (concurrency != null && concurrency.isA<JSNumber>()) {
+        final cores = (concurrency as JSNumber).toDartDouble;
+        if (cores.isFinite && cores >= 1) {
+          cpuCores = cores.round().clamp(1, 256);
+        }
+      }
+
+      // OS detection
+      final platformJs = navObj['platform'];
+      final uaJs = navObj['userAgent'];
+      final platform = platformJs != null && platformJs.isA<JSString>()
+          ? (platformJs as JSString).toDart.toLowerCase()
+          : '';
+      final userAgent = uaJs != null && uaJs.isA<JSString>()
+          ? (uaJs as JSString).toDart.toLowerCase()
+          : '';
+      isMac = platform.contains('mac') || userAgent.contains('macintosh');
+
+      if (isMac) {
+        cpuName = 'Apple (Web — exact chip unknown)';
+      } else if (platform.contains('win')) {
+        cpuName = 'Windows PC (Web)';
+      } else if (platform.contains('linux')) {
+        cpuName = 'Linux (Web)';
+      }
     }
 
-    // CPU cores — navigator.hardwareConcurrency (all browsers)
-    cpuCores = html.window.navigator.hardwareConcurrency ?? 4;
+    // GPU — WebGL renderer string via document.createElement('canvas')
+    final doc = globalContext['document'];
+    if (doc != null && doc.isA<JSObject>()) {
+      final docObj = doc as JSObject;
+      final canvasAny = docObj.callMethod<JSAny?>('createElement'.toJS, 'canvas'.toJS);
+      if (canvasAny != null && canvasAny.isA<JSObject>()) {
+        final canvas = canvasAny as JSObject;
+        final glAny =
+            canvas.callMethod<JSAny?>('getContext'.toJS, 'webgl2'.toJS) ??
+            canvas.callMethod<JSAny?>('getContext'.toJS, 'webgl'.toJS);
+        if (glAny != null && glAny.isA<JSObject>()) {
+          final gl = glAny as JSObject;
+          try {
+            final debugExt = gl.callMethod<JSAny?>(
+              'getExtension'.toJS,
+              'WEBGL_debug_renderer_info'.toJS,
+            );
+            if (debugExt != null) {
+              // 0x9246 = UNMASKED_RENDERER_WEBGL
+              final rendererAny = gl.callMethod<JSAny?>(
+                'getParameter'.toJS,
+                0x9246.toJS,
+              );
+              if (rendererAny != null && rendererAny.isA<JSString>()) {
+                var renderer = (rendererAny as JSString)
+                    .toDart
+                    .replaceAll(
+                      RegExp(
+                        r'[\x00-\x1F\x7F-\x9F\u202A-\u202E\u2066-\u2069\u061C]',
+                      ),
+                      ' ',
+                    )
+                    .trim();
+                if (renderer.length > 256) {
+                  renderer = renderer.substring(0, 256).trim();
+                }
+                if (renderer.isNotEmpty) {
+                  gpuRenderer = renderer;
+                  gpu = GpuBackend.webgl;
 
-    // OS detection
-    final platform = html.window.navigator.platform?.toLowerCase() ?? '';
-    final userAgent = html.window.navigator.userAgent.toLowerCase();
-    isMac = platform.contains('mac') || userAgent.contains('macintosh');
-
-    if (isMac) {
-      cpuName = 'Apple (Web — exact chip unknown)';
-    } else if (platform.contains('win')) {
-      cpuName = 'Windows PC (Web)';
-    } else if (platform.contains('linux')) {
-      cpuName = 'Linux (Web)';
-    }
-
-    // GPU — WebGL renderer string
-    final canvas = html.CanvasElement();
-    final gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
-    if (gl != null) {
-      final debugExt = js_util.callMethod<Object?>(
-          gl, 'getExtension', ['WEBGL_debug_renderer_info']);
-      if (debugExt != null) {
-        // 0x9246 = UNMASKED_RENDERER_WEBGL
-        final renderer = js_util.callMethod(gl, 'getParameter', [0x9246]) as String?;
-        if (renderer != null && renderer.isNotEmpty) {
-          gpuRenderer = renderer;
-          gpu = GpuBackend.webgl;
-
-          // Infer Mac chip from renderer if possible
-          final lower = renderer.toLowerCase();
-          if (lower.contains('apple m4')) cpuName = 'Apple M4 (via WebGL)';
-          else if (lower.contains('apple m3')) cpuName = 'Apple M3 (via WebGL)';
-          else if (lower.contains('apple m2')) cpuName = 'Apple M2 (via WebGL)';
-          else if (lower.contains('apple m1')) cpuName = 'Apple M1 (via WebGL)';
-          else if (lower.contains('apple')) cpuName = 'Apple GPU (via WebGL)';
+                  final lower = renderer.toLowerCase();
+                  if (lower.contains('apple m4')) {
+                    cpuName = 'Apple M4 (via WebGL)';
+                  } else if (lower.contains('apple m3')) {
+                    cpuName = 'Apple M3 (via WebGL)';
+                  } else if (lower.contains('apple m2')) {
+                    cpuName = 'Apple M2 (via WebGL)';
+                  } else if (lower.contains('apple m1')) {
+                    cpuName = 'Apple M1 (via WebGL)';
+                  } else if (lower.contains('apple')) {
+                    cpuName = 'Apple GPU (via WebGL)';
+                  }
+                }
+              }
+            }
+          } finally {
+            // Explicitly release temporary WebGL context so repeated hardware
+            // probes never exhaust the browser's active WebGL context limit (~16).
+            try {
+              final loseExt = gl.callMethod<JSAny?>(
+                'getExtension'.toJS,
+                'WEBGL_lose_context'.toJS,
+              );
+              if (loseExt != null && loseExt.isA<JSObject>()) {
+                (loseExt as JSObject).callMethod<JSAny?>('loseContext'.toJS);
+              }
+            } catch (_) {}
+          }
         }
       }
     }
   } catch (_) {}
 
-  // On web, navigator.deviceMemory caps at 8GB.
-  // If user has 8+ cores it's likely a better machine, bump estimate.
   if (totalRam == 8 && cpuCores >= 8) {
-    totalRam = 16; // Better estimate for modern machines
+    totalRam = 16;
   }
 
-  final tier = HardwareProfile.classifyTier(
-    totalRam, gpu, 0, null, null,
-  );
+  final tier = HardwareProfile.classifyTier(totalRam, gpu, 0, null, null);
 
   return HardwareProfile(
     totalRamGB: totalRam,
@@ -90,8 +150,8 @@ Future<HardwareProfile> detectHardware() async {
     cpuName: cpuName,
     cpuCores: cpuCores,
     gpuBackend: gpu,
-    gpuVramGB: 0, // Not available via WebGL
-    availableDiskGB: 0, // Not available in web
+    gpuVramGB: 0,
+    availableDiskGB: 0,
     isMac: isMac,
     isWeb: true,
     gpuRenderer: gpuRenderer,

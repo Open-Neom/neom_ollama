@@ -9,7 +9,7 @@
 
 import 'hardware_profiler_stub.dart'
     if (dart.library.io) 'hardware_profiler_native.dart'
-    if (dart.library.html) 'hardware_profiler_web.dart'
+    if (dart.library.js_interop) 'hardware_profiler_web.dart'
     as platform;
 
 export 'hardware_profile_model.dart';

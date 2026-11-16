@@ -94,6 +94,109 @@ class PlainTextToolCallParser {
   /// Prevents pathological input from blowing up memory or time. 256 KB
   /// matches Gateway's upstream budget.
   static const int defaultMaxPayloadBytes = 256 * 1024;
+  static const int _maxSanitizeDepth = 16;
+  static const int _maxArgumentCollectionItems = 1024;
+
+  static final RegExp _validToolNameRe = RegExp(r'^[A-Za-z0-9_.\-:]{1,128}$');
+  static const Set<String> _prototypePollutionKeys = {
+    '__proto__',
+    'constructor',
+    'prototype',
+  };
+
+  static bool _isValidToolName(String name) =>
+      _validToolNameRe.hasMatch(name) &&
+      name != '.' &&
+      !name.contains('..') &&
+      !(name.startsWith('__') && name.endsWith('__')) &&
+      !_prototypePollutionKeys.contains(name.toLowerCase());
+
+  /// Closed and unclosed reasoning or untrusted memory/context spans
+  /// (`<think>`, `<thinking>`, `<thought>`, `<memory_recall>`, `<auto_memory>`,
+  /// `<system_context>`, `[BIOCHIP]...[/BIOCHIP]`, Gemma-4
+  /// `<|channel>thought...<channel|>` / `<|turn>thought...<turn|>`) inside
+  /// which hypothetical or prompt-injected tool calls must NEVER be extracted.
+  static final RegExp _closedReasoningSpanRe = RegExp(
+    r'(?:<\s*(think(?:ing)?|thought|memory_recall|auto_memory|system_context)\b[^>]*>[\s\S]*?<\s*/\s*\1\s*>|\[\s*(BIOCHIP|MEMORY_RECALL|AUTO_MEMORY|SYSTEM_CONTEXT)\s*\](?:(?!\[\s*\2\s*\])[\s\S])*?\[\s*/\s*\2\s*\]|<\|(?:channel|turn)\|?>\s*thought\b[\s\S]*?(?:<\|?(?:channel|turn)\|>|</(?:channel|turn)>))',
+    caseSensitive: false,
+  );
+  static final RegExp _openReasoningSpanRe = RegExp(
+    r'(?:<\s*(?:think(?:ing)?|thought|memory_recall|auto_memory|system_context)\b[^>]*>|<\|(?:channel|turn)\|?>\s*thought\b)[\s\S]*$',
+    caseSensitive: false,
+  );
+
+  static List<(int, int)> _findReasoningSpans(String text) {
+    final spans = <(int, int)>[];
+    var cursor = 0;
+    for (final m in _closedReasoningSpanRe.allMatches(text)) {
+      spans.add((m.start, m.end));
+      if (m.end > cursor) cursor = m.end;
+    }
+    if (cursor < text.length) {
+      final tailMatch = _openReasoningSpanRe.firstMatch(text.substring(cursor));
+      if (tailMatch != null) {
+        spans.add((cursor + tailMatch.start, text.length));
+      }
+    }
+    return spans;
+  }
+
+  static bool _isInsideReasoningSpan(
+    int start,
+    int end,
+    List<(int, int)> spans,
+  ) {
+    for (final (rStart, rEnd) in spans) {
+      if (start < rEnd && end > rStart) return true;
+    }
+    return false;
+  }
+
+  static Object? _sanitizeArgumentValue(Object? value, [int depth = 0]) {
+    if (value == null || value is bool || value is String) {
+      return value;
+    }
+    if (value is num) {
+      return value.isFinite ? value : null;
+    }
+    if (depth >= _maxSanitizeDepth) return null;
+    if (value is Map) {
+      final out = <String, Object?>{};
+      for (final entry in value.entries) {
+        if (out.length >= _maxArgumentCollectionItems) break;
+        final key = entry.key.toString();
+        final cleanKey = key.trim();
+        if (_prototypePollutionKeys.contains(cleanKey.toLowerCase()) ||
+            (cleanKey.startsWith('__') && cleanKey.endsWith('__'))) {
+          continue;
+        }
+        out[key] = _sanitizeArgumentValue(entry.value, depth + 1);
+      }
+      return out;
+    }
+    if (value is List) {
+      return value
+          .take(_maxArgumentCollectionItems)
+          .map((e) => _sanitizeArgumentValue(e, depth + 1))
+          .toList();
+    }
+    return value;
+  }
+
+  static Map<String, Object?> _sanitizeArgumentMap(Map<Object?, Object?> raw) {
+    final out = <String, Object?>{};
+    for (final entry in raw.entries) {
+      if (out.length >= _maxArgumentCollectionItems) break;
+      final key = entry.key.toString();
+      final cleanKey = key.trim();
+      if (_prototypePollutionKeys.contains(cleanKey.toLowerCase()) ||
+          (cleanKey.startsWith('__') && cleanKey.endsWith('__'))) {
+        continue;
+      }
+      out[key] = _sanitizeArgumentValue(entry.value, 1);
+    }
+    return out;
+  }
 
   /// Scans [text] for tool calls in any of the supported formats.
   ///
@@ -108,26 +211,41 @@ class PlainTextToolCallParser {
     Set<String>? allowedToolNames,
     int maxPayloadBytes = defaultMaxPayloadBytes,
   }) {
-    if (text.isEmpty) return const [];
+    if (text.isEmpty || !maxPayloadBytes.isFinite || maxPayloadBytes <= 0) {
+      return const [];
+    }
 
+    final reasoningSpans = _findReasoningSpans(text);
     final blocks = <PlainTextToolCallBlock>[];
     blocks.addAll(_parseBracketBlocks(text, maxPayloadBytes));
     blocks.addAll(
-      _parseTagBlocks(text, 'tool_call', PlainTextToolCallFormat.toolCallTag),
+      _parseTagBlocks(
+        text,
+        'tool_call',
+        PlainTextToolCallFormat.toolCallTag,
+        maxPayloadBytes,
+      ),
     );
     blocks.addAll(
       _parseTagBlocks(
         text,
         'function_call',
         PlainTextToolCallFormat.functionCallTag,
+        maxPayloadBytes,
       ),
     );
-    blocks.addAll(_parseFencedBlocks(text));
+    blocks.addAll(_parseFencedBlocks(text, maxPayloadBytes));
+
+    // Filter out any candidate blocks inside chain-of-thought reasoning spans
+    // BEFORE checking whether bare JSON fallback should run.
+    blocks.removeWhere(
+      (b) => _isInsideReasoningSpan(b.start, b.end, reasoningSpans),
+    );
 
     // Bare-JSON detection runs only when nothing else matched. Otherwise we
     // would double-count the inner JSON of a tag- or fence-wrapped block.
-    if (blocks.isEmpty) {
-      final bare = _parseBareJson(text);
+    if (blocks.isEmpty && reasoningSpans.isEmpty) {
+      final bare = _parseBareJson(text, maxPayloadBytes);
       if (bare != null) blocks.add(bare);
     }
 
@@ -136,6 +254,7 @@ class PlainTextToolCallParser {
     final filtered = <PlainTextToolCallBlock>[];
     for (final block in blocks) {
       if (filtered.isNotEmpty && block.start < filtered.last.end) continue;
+      if (!_isValidToolName(block.name)) continue;
       if (allowedToolNames != null && !allowedToolNames.contains(block.name)) {
         continue;
       }
@@ -221,6 +340,7 @@ class PlainTextToolCallParser {
     String text,
     String tag,
     PlainTextToolCallFormat format,
+    int maxPayloadBytes,
   ) {
     final blocks = <PlainTextToolCallBlock>[];
     final escaped = RegExp.escape(tag);
@@ -230,6 +350,7 @@ class PlainTextToolCallParser {
     );
     for (final match in pattern.allMatches(text)) {
       final inner = match.group(1)!.trim();
+      if (inner.length > maxPayloadBytes) continue;
       final parsed = _parseInlineToolCallJson(inner);
       if (parsed == null) continue;
       blocks.add(
@@ -255,10 +376,14 @@ class PlainTextToolCallParser {
     caseSensitive: false,
   );
 
-  static List<PlainTextToolCallBlock> _parseFencedBlocks(String text) {
+  static List<PlainTextToolCallBlock> _parseFencedBlocks(
+    String text,
+    int maxPayloadBytes,
+  ) {
     final blocks = <PlainTextToolCallBlock>[];
     for (final match in _fencePattern.allMatches(text)) {
       final inner = match.group(1)!.trim();
+      if (inner.length > maxPayloadBytes) continue;
       final parsed = _parseInlineToolCallJson(inner);
       if (parsed == null) continue;
       blocks.add(
@@ -279,8 +404,12 @@ class PlainTextToolCallParser {
   //  Bare-JSON last resort: whole-message JSON object with name+arguments.
   // ─────────────────────────────────────────────────────────
 
-  static PlainTextToolCallBlock? _parseBareJson(String text) {
+  static PlainTextToolCallBlock? _parseBareJson(
+    String text,
+    int maxPayloadBytes,
+  ) {
     final trimmed = text.trim();
+    if (trimmed.length > maxPayloadBytes) return null;
     if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
     final parsed = _parseInlineToolCallJson(trimmed);
     if (parsed == null) return null;
@@ -314,17 +443,18 @@ class PlainTextToolCallParser {
     }
     if (decoded is! Map) return null;
     final name = decoded['name'];
-    if (name is! String || name.isEmpty) return null;
-    final argsRaw = decoded['arguments'] ?? decoded['parameters'] ?? const {};
+    if (name is! String || !_isValidToolName(name)) return null;
+    final argsRaw =
+        decoded['arguments'] ?? decoded['parameters'] ?? const <String, Object?>{};
     Map<String, Object?> args;
     if (argsRaw is Map) {
-      args = argsRaw.map((k, v) => MapEntry(k.toString(), v));
+      args = _sanitizeArgumentMap(argsRaw);
     } else if (argsRaw is String) {
       // Some models emit `"arguments": "{\"x\":1}"` (string-escaped JSON).
       try {
         final inner = jsonDecode(argsRaw);
         if (inner is Map) {
-          args = inner.map((k, v) => MapEntry(k.toString(), v));
+          args = _sanitizeArgumentMap(inner);
         } else {
           return null;
         }
@@ -375,7 +505,7 @@ class PlainTextToolCallParser {
             if (decoded is! Map) return null;
             return _JsonResult(
               end: i + 1,
-              value: decoded.map((k, v) => MapEntry(k.toString(), v)),
+              value: _sanitizeArgumentMap(decoded),
             );
           } catch (_) {
             return null;

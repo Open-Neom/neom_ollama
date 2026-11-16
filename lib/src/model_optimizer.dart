@@ -3,12 +3,10 @@
 // and inference profiling — inspired by AirLLM patterns.
 
 import 'dart:async';
-import 'dart:convert';
-
-import 'package:http/http.dart' as http;
 
 import 'hardware_profiler.dart';
 import 'ollama_client.dart';
+import 'thinking_parser.dart';
 
 // ═══════════════════════════════════════════
 // Inference Stats
@@ -31,13 +29,20 @@ class InferenceStats {
     required this.tokensPerSecond,
   });
 
-  factory InferenceStats.fromOllamaResponse(Map<String, dynamic> json) {
-    final loadNs = json['load_duration'] as int? ?? 0;
-    final promptNs = json['prompt_eval_duration'] as int? ?? 0;
-    final totalNs = json['total_duration'] as int? ?? 0;
-    final promptTokens = json['prompt_eval_count'] as int? ?? 0;
-    final completionTokens = json['eval_count'] as int? ?? 0;
-    final evalNs = json['eval_duration'] as int? ?? 1;
+  static int _finiteNonNegInt(Object? raw, {int fallback = 0}) {
+    if (raw is num && raw.isFinite && raw >= 0) {
+      return raw is int ? raw : raw.toInt();
+    }
+    return fallback;
+  }
+
+  factory InferenceStats.fromOllamaResponse(Map<Object?, Object?> json) {
+    final loadNs = _finiteNonNegInt(json['load_duration']);
+    final promptNs = _finiteNonNegInt(json['prompt_eval_duration']);
+    final totalNs = _finiteNonNegInt(json['total_duration']);
+    final promptTokens = _finiteNonNegInt(json['prompt_eval_count']);
+    final completionTokens = _finiteNonNegInt(json['eval_count']);
+    final evalNs = _finiteNonNegInt(json['eval_duration'], fallback: 1);
 
     return InferenceStats(
       loadDuration: Duration(microseconds: loadNs ~/ 1000),
@@ -158,22 +163,11 @@ class ModelOptimizer {
   }
 
   /// Unloads the model from Ollama's memory to free RAM/VRAM.
-  /// Uses the keep_alive=0 trick.
+  /// Uses the keep_alive=0 trick via [_client] (`followRedirects = false`).
   Future<void> unloadModel(String modelName) async {
     _cancelIdleTimer();
-    try {
-      final uri = Uri.parse('${_client.host}/api/generate');
-      await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'model': modelName,
-          'prompt': '',
-          'keep_alive': 0,
-        }),
-      );
-    } catch (_) {}
-
+    if (!OllamaClient.isValidModelName(modelName)) return;
+    await _client.unloadModel(modelName);
     _currentModel = LoadedModelInfo(
       name: modelName,
       state: ModelLoadState.unloaded,
@@ -204,30 +198,13 @@ class ModelOptimizer {
   }) async {
     resetIdleTimer();
 
-    final uri = Uri.parse('${_client.host}/api/chat');
-    final body = {
-      'model': model,
-      'messages': [
-        if (system != null) {'role': 'system', 'content': system},
-        {'role': 'user', 'content': prompt},
-      ],
-      'stream': false,
-    };
-
-    final response = await http.post(
-      uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
-
-    if (response.statusCode != 200) {
-      throw Exception('Ollama chat failed: ${response.statusCode}');
-    }
-
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
-    final message = json['message'] as Map<String, dynamic>? ?? {};
-    final content = message['content'] as String? ?? '';
-    final stats = InferenceStats.fromOllamaResponse(json);
+    final decoded = await _client.chatRaw(model, prompt, system: system);
+    final rawMessage = decoded['message'];
+    final rawContent = rawMessage is Map
+        ? (rawMessage['content']?.toString() ?? '')
+        : '';
+    final content = ThinkingParser.stripThinking(rawContent);
+    final stats = InferenceStats.fromOllamaResponse(decoded);
 
     return (response: content, stats: stats);
   }
@@ -267,22 +244,7 @@ class ModelOptimizer {
   }
 
   /// Lists models currently loaded in Ollama's memory.
-  Future<List<String>> getLoadedModels() async {
-    try {
-      final uri = Uri.parse('${_client.host}/api/ps');
-      final response = await http.get(uri);
-      if (response.statusCode != 200) return [];
-
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
-      final models = json['models'] as List<dynamic>? ?? [];
-      return models
-          .map((m) => (m as Map<String, dynamic>)['name'] as String? ?? '')
-          .where((n) => n.isNotEmpty)
-          .toList();
-    } catch (_) {
-      return [];
-    }
-  }
+  Future<List<String>> getLoadedModels() => _client.listRunningModels();
 
   /// Unloads all models from Ollama memory.
   Future<void> unloadAll() async {

@@ -53,24 +53,30 @@ class HardwareProfile {
     int? vramGB,
     GpuBackend? gpu,
   }) {
-    final newRam = ramGB ?? totalRamGB;
-    final newGpu = gpu ?? (hasGpu == true ? GpuBackend.cuda : gpuBackend);
-    final newVram = vramGB ?? gpuVramGB;
+    final rawRam = ramGB ?? totalRamGB;
+    final newRam = rawRam.isFinite ? (rawRam < 1 ? 1 : rawRam) : totalRamGB;
+    final effectiveGpu = hasGpu == false
+        ? GpuBackend.none
+        : (gpu ?? (hasGpu == true ? GpuBackend.cuda : gpuBackend));
+    final rawVram = vramGB ?? gpuVramGB;
+    final effectiveVram = hasGpu == false
+        ? 0
+        : (rawVram.isFinite ? (rawVram < 0 ? 0 : rawVram) : gpuVramGB);
 
     return HardwareProfile(
       totalRamGB: newRam,
       availableRamGB: (newRam * 0.6).round(),
       cpuName: cpuName,
       cpuCores: cpuCores,
-      gpuBackend: hasGpu == false ? GpuBackend.none : newGpu,
-      gpuVramGB: hasGpu == false ? 0 : newVram,
+      gpuBackend: effectiveGpu,
+      gpuVramGB: effectiveVram,
       availableDiskGB: availableDiskGB,
       isMac: isMac,
       isWeb: isWeb,
       macChip: macChip,
       macTier: macTier,
       gpuRenderer: gpuRenderer,
-      tier: classifyTier(newRam, newGpu, newVram, macChip, macTier),
+      tier: classifyTier(newRam, effectiveGpu, effectiveVram, macChip, macTier),
       isEstimated: isEstimated,
     );
   }
@@ -85,10 +91,14 @@ class HardwareProfile {
   }
 
   /// Whether the hardware can run a model of given disk size.
-  bool canRunModel(double modelSizeGB) => modelSizeGB <= maxModelSizeGB;
+  bool canRunModel(double modelSizeGB) =>
+      modelSizeGB.isFinite &&
+      modelSizeGB >= 0 &&
+      modelSizeGB <= maxModelSizeGB;
 
   /// Estimated tokens/second for a model of given parameter count (billions).
   int estimateTokensPerSecond(double paramsBillions) {
+    if (!paramsBillions.isFinite || paramsBillions <= 0) return 1;
     int baseSpeed;
     if (paramsBillions <= 2) baseSpeed = 45;
     else if (paramsBillions <= 4) baseSpeed = 35;

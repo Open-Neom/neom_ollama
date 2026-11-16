@@ -153,5 +153,41 @@ void main() {
       final c = OllamaClient(host: 'http://example.com:1234');
       expect(c.openAiBaseUrl, 'http://example.com:1234/v1');
     });
+
+    test('blocks cloud metadata IMDS, wildcard 0.0.0.0/::, and strips userinfo (T-098)', () {
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://169.254.169.254/latest'),
+        equals('http://localhost:11434'),
+      );
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://100.100.100.200:80'),
+        equals('http://localhost:11434'),
+      );
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://metadata.google.internal.'),
+        equals('http://localhost:11434'),
+      );
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://0.0.0.0:11434'),
+        equals('http://localhost:11434'),
+      );
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://[::]:11434'),
+        equals('http://localhost:11434'),
+      );
+      expect(
+        OllamaClient.normalizeEndpointUrl('http://user:secret@localhost:11434/'),
+        equals('http://localhost:11434'),
+      );
+    });
+
+    test('isValidModelName enforces safe model identifiers (T-098)', () {
+      expect(OllamaClient.isValidModelName('llama3.2:3b'), isTrue);
+      expect(OllamaClient.isValidModelName('hf.co/org/model:Q4_K_M'), isTrue);
+      expect(OllamaClient.isValidModelName(''), isFalse);
+      expect(OllamaClient.isValidModelName('../etc/passwd'), isFalse);
+      expect(OllamaClient.isValidModelName('-flag'), isFalse);
+      expect(OllamaClient.isValidModelName('llama\u202Eevil'), isFalse);
+    });
   });
 }
