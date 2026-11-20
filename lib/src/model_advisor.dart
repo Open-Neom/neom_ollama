@@ -90,11 +90,25 @@ class ModelRecommendation {
 
 class _KnownModel {
   final String name;
+
+  /// Total parameter count in billions (used for RAM/VRAM & disk footprint,
+  /// including Gemma 4 PLE embedding tables and MoE total weights).
   final double params;
+
+  /// Effective / active parameters per token in billions (used for tok/s
+  /// throughput estimation; defaults to [params] for standard dense models).
+  final double activeParams;
+
   final List<String> tags;
   final String category; // coding, general, reasoning
 
-  const _KnownModel(this.name, this.params, this.tags, this.category);
+  const _KnownModel(
+    this.name,
+    this.params,
+    this.tags,
+    this.category, {
+    double? activeParams,
+  }) : activeParams = activeParams ?? params;
 }
 
 const _knownModels = <_KnownModel>[
@@ -105,23 +119,30 @@ const _knownModels = <_KnownModel>[
   _KnownModel('qwen2.5-coder', 32, ['32b'], 'coding'),
   _KnownModel('deepseek-coder-v2', 16, ['16b'], 'coding'),
 
-  // General
+  // General (Gemma 4 Apache 2.0 replaces legacy Gemma 2)
   _KnownModel('llama3.2', 3, ['3b'], 'general'),
   _KnownModel('llama3.1', 8, ['8b'], 'general'),
   _KnownModel('llama3.1', 70, ['70b'], 'general'),
-  _KnownModel('gemma2', 2, ['2b'], 'general'),
-  _KnownModel('gemma2', 9, ['9b'], 'general'),
-  _KnownModel('gemma2', 27, ['27b'], 'general'),
+  _KnownModel('gemma4', 5.1, ['e2b'], 'general', activeParams: 2.3),
+  _KnownModel('gemma4', 8.0, ['e4b'], 'general', activeParams: 4.5),
+  _KnownModel('gemma4', 12, ['12b'], 'general'),
+  _KnownModel('gemma4', 25.2, ['26b'], 'general', activeParams: 3.8),
+  _KnownModel('gemma4', 30.7, ['31b'], 'general'),
   _KnownModel('qwen2.5', 3, ['3b'], 'general'),
   _KnownModel('qwen2.5', 7, ['7b'], 'general'),
   _KnownModel('qwen2.5', 14, ['14b'], 'general'),
   _KnownModel('qwen2.5', 32, ['32b'], 'general'),
   _KnownModel('phi3.5', 3.8, ['3.8b'], 'general'),
 
-  // Reasoning
+  // Reasoning (Gemma 4 includes native built-in thinking mode across all sizes)
+  _KnownModel('gemma4', 5.1, ['e2b'], 'reasoning', activeParams: 2.3),
+  _KnownModel('gemma4', 8.0, ['e4b'], 'reasoning', activeParams: 4.5),
   _KnownModel('qwen3', 8, ['8b'], 'reasoning'),
   _KnownModel('deepseek-r1', 7, ['7b'], 'reasoning'),
+  _KnownModel('gemma4', 12, ['12b'], 'reasoning'),
   _KnownModel('deepseek-r1', 14, ['14b'], 'reasoning'),
+  _KnownModel('gemma4', 25.2, ['26b'], 'reasoning', activeParams: 3.8),
+  _KnownModel('gemma4', 30.7, ['31b'], 'reasoning'),
 ];
 
 // ═══════════════════════════════════════════
@@ -226,7 +247,7 @@ class ModelAdvisor {
       if (alts.length >= 3) break;
     }
 
-    final tokPerSec = hw.estimateTokensPerSecond(best.params);
+    final tokPerSec = hw.estimateTokensPerSecond(best.activeParams);
 
     return ModelRecommendation(
       recommended: recommended,
