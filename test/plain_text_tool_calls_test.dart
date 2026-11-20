@@ -212,4 +212,50 @@ void main() {
       );
     });
   });
+
+  group('PlainTextToolCallParser - Gemma 4 standalone function syntax', () {
+    test('parses standalone call with allowed tool and strips residue', () {
+      const text = 'get_weather(location="CDMX", units="c");</tool_call>';
+      final blocks = PlainTextToolCallParser.parse(
+        text,
+        allowedToolNames: const {'get_weather'},
+      );
+      expect(blocks, hasLength(1));
+      expect(blocks.first.format, PlainTextToolCallFormat.functionSyntax);
+      expect(blocks.first.name, 'get_weather');
+      expect(blocks.first.arguments, {'location': 'CDMX', 'units': 'c'});
+      expect(PlainTextToolCallParser.strip(text, blocks), isEmpty);
+    });
+
+    test('parses call:tool{...} with Gemma 4 <|"|> string quotes', () {
+      const text =
+          '<|channel>thought\nchecking route\n<channel|>\ncall:navigate{route: <|"|>/library<|"|>, tab: 2}';
+      final blocks = PlainTextToolCallParser.parse(
+        text,
+        allowedToolNames: const {'navigate'},
+      );
+      expect(blocks, hasLength(1));
+      expect(blocks.first.name, 'navigate');
+      expect(blocks.first.arguments, {'route': '/library', 'tab': 2});
+    });
+
+    test('rejects explanatory prose mentioning a function call', () {
+      const prose =
+          'get_weather(location="Paris") would retrieve the current forecast.';
+      final blocks = PlainTextToolCallParser.parse(
+        prose,
+        allowedToolNames: const {'get_weather'},
+      );
+      expect(blocks, isEmpty);
+    });
+
+    test('rejects undeclared tool names in function syntax', () {
+      const text = 'delete_all(force=true)';
+      final blocks = PlainTextToolCallParser.parse(
+        text,
+        allowedToolNames: const {'get_weather'},
+      );
+      expect(blocks, isEmpty);
+    });
+  });
 }

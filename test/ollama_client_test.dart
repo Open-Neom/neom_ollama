@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:neom_ollama/src/hardware_profile_model.dart';
 import 'package:neom_ollama/src/ollama_client.dart';
 import 'package:test/test.dart';
 
@@ -188,6 +192,64 @@ void main() {
       expect(OllamaClient.isValidModelName('../etc/passwd'), isFalse);
       expect(OllamaClient.isValidModelName('-flag'), isFalse);
       expect(OllamaClient.isValidModelName('llama\u202Eevil'), isFalse);
+    });
+  });
+
+  group('OllamaModel context window & M5 unified memory (CoPaw #8236 / NobodyWho #874)', () {
+    test('prefers num_ctx over model_info context_length', () {
+      final m = OllamaModel.fromJson({
+        'name': 'gemma4:e4b',
+        'parameters': 'temperature 0.7\nnum_ctx 8192\ntop_p 0.9',
+        'model_info': {'gemma4.context_length': 131072},
+      });
+      expect(m.numCtx, 8192);
+      expect(m.contextLength, 131072);
+      expect(m.effectiveContextLength, 8192);
+    });
+
+    test('resolveContextWindow reads /api/show num_ctx instead of 128k default', () async {
+      final client = OllamaClient(
+        host: 'http://localhost:11434',
+        httpClient: MockClient((req) async {
+          if (req.url.path == '/api/show') {
+            return http.Response(
+              jsonEncode({
+                'parameters': 'num_ctx 16384',
+                'model_info': {'qwen2.context_length': 131072},
+              }),
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        }),
+      );
+      expect(await client.resolveContextWindow('qwen2.5:7b'), 16384);
+    });
+
+    test('Apple Silicon M5 unified memory never double-counts RAM + VRAM', () {
+      final tier = HardwareProfile.classifyTier(
+        16,
+        GpuBackend.metal,
+        16,
+        'M5',
+        'pro',
+      );
+      expect(tier, HardwareTier.high);
+      final profile = HardwareProfile(
+        totalRamGB: 16,
+        availableRamGB: 10,
+        cpuName: 'Apple M5 Pro',
+        cpuCores: 12,
+        gpuBackend: GpuBackend.metal,
+        gpuVramGB: 16,
+        availableDiskGB: 200,
+        isMac: true,
+        macChip: 'M5',
+        macTier: 'pro',
+        tier: tier,
+      );
+      // Unified memory 16 GB must cap at 16 * 0.65 = 10.4 GB (never 32 GB).
+      expect(profile.maxModelSizeGB, closeTo(10.4, 0.01));
     });
   });
 }

@@ -20,7 +20,7 @@ class HardwareProfile {
   final int availableDiskGB;
   final bool isMac;
   final bool isWeb;
-  final String? macChip;       // M1, M2, M3, M4
+  final String? macChip;       // M1, M2, M3, M4, M5
   final String? macTier;       // base, pro, max, ultra
   final String? gpuRenderer;   // WebGL renderer string
   final HardwareTier tier;
@@ -146,7 +146,7 @@ class HardwareProfile {
     int ram, GpuBackend gpu, int vram, String? macChip, String? macTier,
   ) {
     if (macChip != null) {
-      final isNew = macChip == 'M3' || macChip == 'M4';
+      final isNew = macChip == 'M3' || macChip == 'M4' || macChip == 'M5';
       if (ram >= 32 || macTier == 'max' || macTier == 'ultra') return HardwareTier.ultra;
       if (ram >= 24 || (isNew && ram >= 16 && macTier == 'pro')) return HardwareTier.high;
       if (ram >= 16) return HardwareTier.medium;

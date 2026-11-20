@@ -61,6 +61,11 @@ enum PlainTextToolCallFormat {
   /// Bare `{"name": "...", "arguments": {...}}` taking up the entire trailing
   /// line(s) with no surrounding markup.
   bareJson,
+
+  /// Standalone Gemma 4 function-call syntax (`tool_name(k="v")` or
+  /// `call:tool_name{k: "v"}`) gated to start-of-reply with a declared tool
+  /// name and no trailing explanatory prose (strips `;` / `</tool_call>` residue).
+  functionSyntax,
 }
 
 /// Parses tool calls embedded as text inside model responses.
@@ -249,6 +254,21 @@ class PlainTextToolCallParser {
       if (bare != null) blocks.add(bare);
     }
 
+    // Gemma 4 standalone function-syntax fallback: strictly gated to start of
+    // visible reply (after any leading reasoning span), declared in
+    // `allowedToolNames`, balanced closing delimiter, and no trailing prose.
+    if (blocks.isEmpty &&
+        allowedToolNames != null &&
+        allowedToolNames.isNotEmpty) {
+      final fnBlock = _parseGemmaFunctionSyntax(
+        text,
+        reasoningSpans,
+        allowedToolNames,
+        maxPayloadBytes,
+      );
+      if (fnBlock != null) blocks.add(fnBlock);
+    }
+
     // Document order, then dedupe overlapping ranges (paranoia).
     blocks.sort((a, b) => a.start.compareTo(b.start));
     final filtered = <PlainTextToolCallBlock>[];
@@ -422,6 +442,266 @@ class PlainTextToolCallParser {
       raw: trimmed,
       format: PlainTextToolCallFormat.bareJson,
     );
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  Gemma 4 standalone function syntax:
+  //    fn_name(k="v", n=2)   or   call:fn_name{k: <|"|>v<|"|>}
+  //  Gated to reply start + declared tool + closed args + residue-only tail.
+  // ─────────────────────────────────────────────────────────
+
+  static final RegExp _gemmaFnHeaderRe = RegExp(
+    r'^(?:call\s*:\s*)?([A-Za-z0-9_.\-:]{1,128})\s*([({])',
+  );
+  static final RegExp _gemmaTrailingResidueRe = RegExp(
+    r'^(?:\s|;|</tool_call>|<\|call\|>|<call\|>)*$',
+    caseSensitive: false,
+  );
+
+  static PlainTextToolCallBlock? _parseGemmaFunctionSyntax(
+    String text,
+    List<(int, int)> reasoningSpans,
+    Set<String> allowedToolNames,
+    int maxPayloadBytes,
+  ) {
+    // Advance past leading whitespace and any leading reasoning spans.
+    var cursor = _skipWhitespace(text, 0);
+    var advanced = true;
+    while (advanced && cursor < text.length) {
+      advanced = false;
+      for (final (rStart, rEnd) in reasoningSpans) {
+        if (cursor >= rStart && cursor < rEnd) {
+          cursor = _skipWhitespace(text, rEnd);
+          advanced = true;
+          break;
+        }
+      }
+    }
+    if (cursor >= text.length) return null;
+
+    final tail = text.substring(cursor);
+    final match = _gemmaFnHeaderRe.firstMatch(tail);
+    if (match == null) return null;
+
+    final name = match.group(1)!;
+    final openChar = match.group(2)!;
+    if (!_isValidToolName(name) || !allowedToolNames.contains(name)) {
+      return null;
+    }
+
+    final closeChar = openChar == '(' ? ')' : '}';
+    final openIdx = cursor + match.end - 1;
+    final closeIdx = _findMatchingDelimiter(
+      text,
+      openIdx,
+      openChar,
+      closeChar,
+      maxPayloadBytes,
+    );
+    if (closeIdx == null) return null;
+
+    // Gate: trailing text after the closing delimiter must ONLY be whitespace
+    // or recognized `;` / `</tool_call>` residue (never explanatory prose like
+    // `get_weather(location="Paris") would retrieve the forecast.`).
+    final afterClose = text.substring(closeIdx + 1);
+    if (!_gemmaTrailingResidueRe.hasMatch(afterClose)) {
+      return null;
+    }
+
+    final innerArgs = text.substring(openIdx + 1, closeIdx).trim();
+    final parsedArgs = openChar == '{'
+        ? _parseGemmaObjectArgs('{$innerArgs}')
+        : _parseFunctionKeywordArgs(innerArgs);
+    if (parsedArgs == null) return null;
+
+    // Consume trailing `;` / `</tool_call>` residue into the block span so
+    // `strip()` leaves clean user-visible output with zero leaked tags.
+    final fullEnd = text.length;
+    return PlainTextToolCallBlock(
+      name: name,
+      arguments: _sanitizeArgumentMap(parsedArgs),
+      start: cursor,
+      end: fullEnd,
+      raw: text.substring(cursor, fullEnd),
+      format: PlainTextToolCallFormat.functionSyntax,
+    );
+  }
+
+  static int? _findMatchingDelimiter(
+    String text,
+    int openIdx,
+    String openChar,
+    String closeChar,
+    int maxPayloadBytes,
+  ) {
+    var depth = 0;
+    String? quote;
+    var inGemmaQuote = false;
+    var escaped = false;
+
+    for (var i = openIdx; i < text.length; i++) {
+      if (i - openIdx > maxPayloadBytes) return null;
+      if (inGemmaQuote) {
+        if (text.startsWith('<|"|>', i)) {
+          inGemmaQuote = false;
+          i += 4;
+        }
+        continue;
+      }
+      final ch = text[i];
+      if (quote != null) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch == r'\') {
+          escaped = true;
+        } else if (ch == quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (text.startsWith('<|"|>', i)) {
+        inGemmaQuote = true;
+        i += 4;
+        continue;
+      }
+      if (ch == '"' || ch == "'") {
+        quote = ch;
+        continue;
+      }
+      if (ch == openChar || ch == '{' || ch == '(' || ch == '[') {
+        depth += 1;
+      } else if (ch == closeChar || ch == '}' || ch == ')' || ch == ']') {
+        depth -= 1;
+        if (depth == 0) {
+          return ch == closeChar ? i : null;
+        }
+        if (depth < 0) return null;
+      }
+    }
+    return null;
+  }
+
+  static Map<Object?, Object?>? _parseGemmaObjectArgs(String rawObj) {
+    // Normalize Gemma 4 `<|"|>...<|"|>` delimiters to standard JSON quotes.
+    final normalized = rawObj.replaceAll('<|"|>', '"');
+    try {
+      final decoded = jsonDecode(normalized);
+      if (decoded is Map) return decoded;
+    } catch (_) {}
+    // Fallback for unquoted keys `{location: "Paris", units: "c"}`.
+    final inner = normalized.trim();
+    if (!inner.startsWith('{') || !inner.endsWith('}')) return null;
+    return _parseFunctionKeywordArgs(
+      inner.substring(1, inner.length - 1).trim(),
+      allowColonSeparator: true,
+    );
+  }
+
+  static Map<Object?, Object?>? _parseFunctionKeywordArgs(
+    String raw, {
+    bool allowColonSeparator = false,
+  }) {
+    if (raw.isEmpty) return <Object?, Object?>{};
+    final out = <Object?, Object?>{};
+    var i = 0;
+
+    while (i < raw.length) {
+      while (i < raw.length &&
+          (_isWhitespace(raw.codeUnitAt(i)) || raw[i] == ',')) {
+        i++;
+      }
+      if (i >= raw.length) break;
+
+      // Parse key (bare identifier or quoted string).
+      String key;
+      if (raw[i] == '"' || raw[i] == "'") {
+        final q = raw[i++];
+        final buf = StringBuffer();
+        var closed = false;
+        while (i < raw.length) {
+          final c = raw[i++];
+          if (c == r'\' && i < raw.length) {
+            buf.write(raw[i++]);
+          } else if (c == q) {
+            closed = true;
+            break;
+          } else {
+            buf.write(c);
+          }
+        }
+        if (!closed) return null;
+        key = buf.toString();
+      } else {
+        final start = i;
+        while (i < raw.length &&
+            RegExp(r'[A-Za-z0-9_.\-]').hasMatch(raw[i])) {
+          i++;
+        }
+        if (i == start) return null;
+        key = raw.substring(start, i);
+      }
+
+      i = _skipWhitespace(raw, i);
+      if (i >= raw.length) return null;
+      final sep = raw[i];
+      if (sep != '=' && !(allowColonSeparator && sep == ':')) return null;
+      i = _skipWhitespace(raw, i + 1);
+      if (i >= raw.length) return null;
+
+      // Extract value up to top-level comma.
+      final valStart = i;
+      var depth = 0;
+      String? quote;
+      var escaped = false;
+      while (i < raw.length) {
+        final ch = raw[i];
+        if (quote != null) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch == r'\') {
+            escaped = true;
+          } else if (ch == quote) {
+            quote = null;
+          }
+        } else if (ch == '"' || ch == "'") {
+          quote = ch;
+        } else if (ch == '{' || ch == '[' || ch == '(') {
+          depth++;
+        } else if (ch == '}' || ch == ']' || ch == ')') {
+          depth--;
+          if (depth < 0) return null;
+        } else if (ch == ',' && depth == 0) {
+          break;
+        }
+        i++;
+      }
+      if (quote != null || depth != 0) return null;
+      final rawVal = raw.substring(valStart, i).trim();
+      final decodedVal = _decodeLooseScalarOrJson(rawVal);
+      if (decodedVal == _parseFailureSentinel) return null;
+      out[key] = decodedVal;
+    }
+    return out;
+  }
+
+  static const Object _parseFailureSentinel = Object();
+
+  static Object? _decodeLooseScalarOrJson(String raw) {
+    if (raw.isEmpty) return _parseFailureSentinel;
+    if (raw == 'true' || raw == 'True') return true;
+    if (raw == 'false' || raw == 'False') return false;
+    if (raw == 'null' || raw == 'None') return null;
+    if (raw.startsWith("'") && raw.endsWith("'") && raw.length >= 2) {
+      return raw
+          .substring(1, raw.length - 1)
+          .replaceAll(r"\'", "'")
+          .replaceAll(r'\\', r'\');
+    }
+    try {
+      return jsonDecode(raw);
+    } catch (_) {
+      return _parseFailureSentinel;
+    }
   }
 
   // ─────────────────────────────────────────────────────────

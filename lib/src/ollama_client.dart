@@ -22,6 +22,14 @@ class OllamaModel {
   final String? parameterSize;
   final String? quantizationLevel;
 
+  /// Model architecture maximum context length from `/api/show` `model_info`
+  /// (e.g. `qwen2.context_length`, `gemma3.context_length`).
+  final int? contextLength;
+
+  /// Explicit runtime context window configured in Modelfile `parameters`
+  /// (`num_ctx <N>`). Takes precedence over [contextLength] when set.
+  final int? numCtx;
+
   const OllamaModel({
     required this.name,
     this.digest,
@@ -30,7 +38,45 @@ class OllamaModel {
     this.family,
     this.parameterSize,
     this.quantizationLevel,
+    this.contextLength,
+    this.numCtx,
   });
+
+  /// Effective runtime context window reported by Ollama (`num_ctx` first,
+  /// then architecture `context_length`), avoiding hardcoded 128k assumptions.
+  int? get effectiveContextLength => numCtx ?? contextLength;
+
+  static int? _parsePositiveContextInt(Object? raw) {
+    final parsed = _parseFiniteInt(raw);
+    if (parsed == null || parsed < 256 || parsed > 4 * 1024 * 1024) {
+      return null;
+    }
+    return parsed;
+  }
+
+  static int? _extractNumCtxFromParameters(Object? rawParams) {
+    if (rawParams == null) return null;
+    final text = rawParams.toString();
+    final match = RegExp(
+      r'^\s*num_ctx\s+(\d+)\b',
+      multiLine: true,
+      caseSensitive: false,
+    ).firstMatch(text);
+    if (match == null) return null;
+    return _parsePositiveContextInt(match.group(1));
+  }
+
+  static int? _extractContextLengthFromModelInfo(Object? rawModelInfo) {
+    if (rawModelInfo is! Map) return null;
+    for (final entry in rawModelInfo.entries) {
+      final key = entry.key?.toString().toLowerCase() ?? '';
+      if (key == 'context_length' || key.endsWith('.context_length')) {
+        final parsed = _parsePositiveContextInt(entry.value);
+        if (parsed != null) return parsed;
+      }
+    }
+    return null;
+  }
 
   static int? _parseFiniteInt(Object? raw) {
     if (raw == null) return null;
@@ -81,6 +127,10 @@ class OllamaModel {
           _cleanOptionalField(details['parameter_size'], maxLen: 64),
       quantizationLevel:
           _cleanOptionalField(details['quantization_level'], maxLen: 64),
+      contextLength: _extractContextLengthFromModelInfo(json['model_info']) ??
+          _parsePositiveContextInt(json['context_length']),
+      numCtx: _parsePositiveContextInt(json['num_ctx']) ??
+          _extractNumCtxFromParameters(json['parameters']),
     );
   }
 
@@ -528,6 +578,20 @@ class OllamaClient {
       );
       return null;
     }
+  }
+
+  /// Resolves the active context window for [model] from Ollama `/api/show`
+  /// (`num_ctx` first, then architecture `context_length`), falling back to
+  /// [fallback] when unavailable instead of assuming a 128k default.
+  Future<int> resolveContextWindow(
+    String model, {
+    int fallback = 8192,
+  }) async {
+    final safeFallback = fallback.clamp(512, 2097152);
+    final info = await showModel(model);
+    final resolved = info?.effectiveContextLength;
+    if (resolved == null) return safeFallback;
+    return resolved.clamp(512, 2097152);
   }
 
   /// Pull (download) a model. Streams progress updates with safe NDJSON

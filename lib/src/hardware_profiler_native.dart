@@ -49,7 +49,9 @@ Future<HardwareProfile> detectHardware() async {
       availableRam = parseVmStatAvailableGb(results[4], totalRam);
 
       final lower = cpuName.toLowerCase();
-      if (lower.contains('m4')) {
+      if (lower.contains('m5')) {
+        macChip = 'M5';
+      } else if (lower.contains('m4')) {
         macChip = 'M4';
       } else if (lower.contains('m3')) {
         macChip = 'M3';
