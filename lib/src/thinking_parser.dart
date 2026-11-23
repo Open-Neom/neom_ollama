@@ -11,21 +11,33 @@ class ThinkingParser {
   ThinkingParser._();
 
   // Matches <think>…</think>, <thinking>…</thinking>, <thought>…</thought>, or
-  // Gemma 4's <|channel>thought…<channel|> / <|turn>thought…<turn|>,
-  // case-insensitive, multi-line, non-greedy (first closing tag wins).
+  // Gemma 4's <|channel>thought…<channel|> / <|turn>thought…<turn|>
+  // (and <|channel|>thought…<|channel|>), case-insensitive, multi-line,
+  // non-greedy (first closing tag wins).
   static final RegExp _tagRe = RegExp(
     r'(?:<(?:think(?:ing)?|thought)>([\s\S]*?)</(?:think(?:ing)?|thought)>|<\|(?:channel|turn)\|?>\s*thought\b([\s\S]*?)(?:<\|?(?:channel|turn)\|>|</(?:channel|turn)>))',
     caseSensitive: false,
   );
 
-  // Matches an open `<think>`, `<thought>`, `<|channel>thought`, or `<|turn>thought` that never closes.
+  // Matches an open `<think>`, `<thinking>`, `<thought>`, `<|channel>thought`,
+  // or `<|turn>thought` that never closes.
   static final RegExp _openRe = RegExp(
     r'(?:<(?:think(?:ing)?|thought)>|<\|(?:channel|turn)\|?>\s*thought\b)([\s\S]*)$',
     caseSensitive: false,
   );
 
+  static final RegExp _closeOnlyRe = RegExp(
+    r'(?:</(?:think(?:ing)?|thought)>|<\|?channel\|>|</channel>)',
+    caseSensitive: false,
+  );
+
+  static final RegExp _openMarkerRe = RegExp(
+    r'(?:<(?:think(?:ing)?|thought)>|<\|(?:channel|turn)\|?>\s*thought\b)',
+    caseSensitive: false,
+  );
+
   static final RegExp _residualTagsRe = RegExp(
-    r'(?:</?(?:think(?:ing)?|thought)>|<\|(?:channel|turn)\|?>\s*thought\b|<\|?(?:channel|turn)\|>|</(?:channel|turn)>|<\|/?(?:turn|im_start|im_end)\|?>|<\|eot_id\|>|<end_of_turn>)',
+    r'(?:</?(?:think(?:ing)?|thought)>|<\|(?:channel|turn)\|?>\s*thought\b|<\|?channel\|>|</channel>|<\|?/?turn\|?>|<\|eot_id\|>|<(?:start|end)_of_turn>|<\|im_(?:start|end)\|>)',
     caseSensitive: false,
   );
 
@@ -36,16 +48,18 @@ class ThinkingParser {
   );
 
   /// Splits [raw] into `(thinking, content)`. Either part may be empty.
-  ///
-  /// * If no reasoning marker is present, `thinking` is empty and `content`
-  ///   is the full input (trimmed).
-  /// * If a tag is open but never closed (even after an earlier closed block),
-  ///   everything after the dangling open tag is treated as thinking and never
-  ///   leaks into `content`.
-  /// * Multiple `<think>` blocks are concatenated in the `thinking` field
-  ///   (separated by a blank line) and stripped from `content`.
   static ThinkingSplit split(String raw) {
     if (raw.isEmpty) return const ThinkingSplit(thinking: '', content: '');
+
+    // Some chat templates end with `<think>` or `<|channel>thought`, so the
+    // model only emits the closing delimiter; treat the prefix as reasoning.
+    final close = _closeOnlyRe.firstMatch(raw);
+    final firstOpen = _openMarkerRe.firstMatch(raw);
+    if (close != null && (firstOpen == null || firstOpen.start > close.start)) {
+      final prefix = raw.substring(0, close.start);
+      final suffix = raw.substring(close.end);
+      return split('<think>$prefix</think>$suffix');
+    }
 
     String cleanTags(String text) =>
         text.replaceAll(_residualTagsRe, '').trim();
@@ -86,8 +100,8 @@ class ThinkingParser {
     final bare = _bareRe.firstMatch(raw);
     if (bare != null) {
       return ThinkingSplit(
-        thinking: bare.group(1)!.trim(),
-        content: bare.group(2)!.trim(),
+        thinking: cleanTags(bare.group(1)!),
+        content: cleanTags(bare.group(2)!),
       );
     }
 
@@ -99,7 +113,10 @@ class ThinkingParser {
 
   /// Returns `true` if [raw] contains any recognised thinking marker.
   static bool hasThinking(String raw) =>
-      _tagRe.hasMatch(raw) || _openRe.hasMatch(raw) || _bareRe.hasMatch(raw);
+      _tagRe.hasMatch(raw) ||
+      _openRe.hasMatch(raw) ||
+      _bareRe.hasMatch(raw) ||
+      _closeOnlyRe.hasMatch(raw);
 }
 
 /// Result of [ThinkingParser.split].

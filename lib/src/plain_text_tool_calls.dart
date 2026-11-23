@@ -62,6 +62,11 @@ enum PlainTextToolCallFormat {
   /// line(s) with no surrounding markup.
   bareJson,
 
+  /// Gemma-4 chat template tag format:
+  /// `<|tool_call>call:toolName{"arg": "val"}<tool_call|>` or
+  /// `<|tool_call>{"name": "toolName", "arguments": {...}}<tool_call|>`.
+  gemma4Tag,
+
   /// Standalone Gemma 4 function-call syntax (`tool_name(k="v")` or
   /// `call:tool_name{k: "v"}`) gated to start-of-reply with a declared tool
   /// name and no trailing explanatory prose (strips `;` / `</tool_call>` residue).
@@ -239,6 +244,7 @@ class PlainTextToolCallParser {
         maxPayloadBytes,
       ),
     );
+    blocks.addAll(_parseGemma4Blocks(text, maxPayloadBytes));
     blocks.addAll(_parseFencedBlocks(text, maxPayloadBytes));
 
     // Filter out any candidate blocks inside chain-of-thought reasoning spans
@@ -383,6 +389,65 @@ class PlainTextToolCallParser {
           format: format,
         ),
       );
+    }
+    return blocks;
+  }
+
+  // ─────────────────────────────────────────────────────────
+  //  Gemma-4 tag form: <|tool_call>call:name{...}<tool_call|>
+  // ─────────────────────────────────────────────────────────
+
+  static final RegExp _gemma4Pattern = RegExp(
+    r'<\|tool_call>([\s\S]*?)<tool_call\|>',
+    caseSensitive: false,
+  );
+
+  static List<PlainTextToolCallBlock> _parseGemma4Blocks(
+    String text,
+    int maxPayloadBytes,
+  ) {
+    final blocks = <PlainTextToolCallBlock>[];
+    for (final match in _gemma4Pattern.allMatches(text)) {
+      final inner = match.group(1)!.trim();
+      if (inner.length > maxPayloadBytes) continue;
+      if (inner.startsWith('call:')) {
+        final afterCall = inner.substring('call:'.length).trim();
+        final braceIdx = afterCall.indexOf('{');
+        if (braceIdx <= 0) continue;
+        final name = afterCall.substring(0, braceIdx).trim();
+        if (!_isValidToolName(name)) continue;
+        final jsonPart = afterCall.substring(braceIdx).trim();
+        if (jsonPart.length > maxPayloadBytes) continue;
+        try {
+          final decoded = jsonDecode(jsonPart);
+          if (decoded is Map) {
+            blocks.add(
+              PlainTextToolCallBlock(
+                name: name,
+                arguments: _sanitizeArgumentMap(decoded),
+                start: match.start,
+                end: match.end,
+                raw: match.group(0)!,
+                format: PlainTextToolCallFormat.gemma4Tag,
+              ),
+            );
+          }
+        } catch (_) {}
+      } else {
+        final parsed = _parseInlineToolCallJson(inner);
+        if (parsed != null) {
+          blocks.add(
+            PlainTextToolCallBlock(
+              name: parsed.name,
+              arguments: parsed.arguments,
+              start: match.start,
+              end: match.end,
+              raw: match.group(0)!,
+              format: PlainTextToolCallFormat.gemma4Tag,
+            ),
+          );
+        }
+      }
     }
     return blocks;
   }
